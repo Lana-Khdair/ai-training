@@ -18,11 +18,6 @@ MAX_REJECT_RATIO = 0.20  # more than 20% rejected -> something is wrong with the
 SPELLING_FIXES = {"sharable": "shareable", "favourite": "favorite", "flavour": "flavor"}
 SPELLING_RE = re.compile(r"\b(" + "|".join(SPELLING_FIXES) + r")\b")
 DASHES_RE = re.compile(r"\s*[\u2013\u2014]\s*")
-# Joke words that say nothing about the food itself.
-FILLER_RE = re.compile(
-    r"\b(?:fake[- ]?order|fake|pretend|imaginary|fictional|hypothetical|delivery[- ]app|never[- ]arriving)\b",
-    re.IGNORECASE,
-)
 
 
 class CleanError(Exception):
@@ -52,15 +47,8 @@ def to_number(value) -> float | None:
 
 
 def clean_description(text: str) -> str:
-    """Lowercase, accent-free, spelling-normalized text with joke words removed."""
-    t = DASHES_RE.sub(", ", text)  # "a — b"      -> "a, b"
-    t = strip_accents(t).lower()  # "Café"       -> "cafe"
-    t = SPELLING_RE.sub(lambda m: SPELLING_FIXES[m.group(1)], t)  # "flavour" -> "flavor"
-    t = FILLER_RE.sub("", t)  # remove joke words
-    t = re.sub(r"\s+", " ", t)  # fix double spaces left by removals
-    t = re.sub(r"\s+([,.;:!?])", r"\1", t)  # "bomb ," -> "bomb,"
-    t = re.sub(r"(?:,\s*){2,}", ", ", t)  # ", , " -> ", "
-    return t.strip(" ,")  # no leading/trailing commas or spaces
+    """Normalize whitespace without changing the original meaning."""
+    return collapse_spaces(text)
 
 
 def clean_tags(tags) -> list[str]:
