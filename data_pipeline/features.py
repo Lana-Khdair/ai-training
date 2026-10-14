@@ -157,9 +157,9 @@ _CHARACTERISTICS = """
 spicy: spice | fiery | heat | kick | chili | hot wing | hotter | arrabbiata
 sweet: sugar | syrup | caramel | honey | glazed | glaze | chocolate | frosting | sweet | fizzy
 fresh: freshly | fresh | bright
-hearty: filling | substantial | satisfying | hearty | stacked | hungriest
+hearty: filling | substantial | satisfying | hearty | stacked | hungriest | indulgence | loaded | full plate | full english breakfast
 buttery: butter | buttery
-cheesy: cheesy | melty | melted | stretchy | bubbling mozzarella
+cheesy: cheesy | melty | melted | stretchy | bubbling mozzarella | cheddar
 rich: indulgent | decadent | rich
 bold: bolder | boldest | punchy | fiery | intense
 cold: iced | chilled | frozen | cold | melts
@@ -169,7 +169,7 @@ tender: tenderly | tender
 earthy
 savory: savoury | umami | seasoned
 light: lighter | lightly | refreshing | light
-crispy: crisp | crisped | crispier | crispiest | crunchy | crunch | crunchier | crunchiest | golden-brown | golden | battered | breadcrumb crust
+crispy: crisp | crisped | crispier | crispiest | crunchy | crunch | crunchier | crunchiest | breadcrumb crust | golden battered
 """
 
 # A trigger word inside one of these phrases does NOT count for that characteristic.
@@ -400,19 +400,46 @@ def latest_clean() -> Path | None:
     return files[-1] if files else None
 
 
-def inspect_missed_items(items: list[dict], report: dict) -> None:
-    missed_ids = {
-        line.split(": tag", 1)[0]
-        for line in report["missed_tag_traits"]
+def get_item_changes(
+    current_items: list[dict],
+    previous_items: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """Return new or modified items and IDs of removed items."""
+
+    previous_by_id = {
+        item["id"]: item
+        for item in previous_items
     }
 
-    for item in items:
-        if item["id"] in missed_ids:
-            print(f"\n--- {item['id']} ---")
-            print("Name:", item["name"])
-            print("Description:", item.get("description", ""))
-            print("Tags:", item.get("tags", []))
-            print("Extracted characteristics:", item.get("characteristics", []))
+    current_by_id = {
+        item["id"]: item
+        for item in current_items
+    }
+
+    changed_items = []
+
+    fields_to_compare = ("name", "price", "description_clean")
+
+    for item in current_items:
+        previous = previous_by_id.get(item["id"])
+
+        # New item
+        if previous is None:
+            changed_items.append(item)
+            continue
+
+        # Existing item whose important fields changed
+        if any(
+            item.get(field) != previous.get(field)
+            for field in fields_to_compare
+        ):
+            changed_items.append(item)
+
+    removed_ids = sorted(
+        set(previous_by_id) - set(current_by_id)
+    )
+
+    return changed_items, removed_ids
 
 
 def main(argv: list[str]) -> int:
@@ -429,6 +456,56 @@ def main(argv: list[str]) -> int:
 
     extractor = FeatureExtractor()
     enriched = [{**item, **features} for item, features in zip(items, extractor.extract_many(items))]
+
+    # Validate extracted features before saving.
+    valid_characteristics = set(CHARACTERISTICS)
+    valid_ingredients = set(INGREDIENTS)
+
+    validation_errors = []
+
+    for item in enriched:
+        ingredients = item.get("ingredients")
+        characteristics = item.get("characteristics")
+
+        if not isinstance(ingredients, list):
+            validation_errors.append(
+                f"{item['id']}: ingredients must be a list"
+            )
+        else:
+            if len(ingredients) != len(set(ingredients)):
+                validation_errors.append(
+                    f"{item['id']}: duplicate ingredients found"
+                )
+
+            for ingredient in ingredients:
+                if ingredient not in valid_ingredients:
+                    validation_errors.append(
+                        f"{item['id']}: unknown ingredient '{ingredient}'"
+                    )
+
+        if not isinstance(characteristics, list):
+            validation_errors.append(
+                f"{item['id']}: characteristics must be a list"
+            )
+        else:
+            if len(characteristics) != len(set(characteristics)):
+                validation_errors.append(
+                    f"{item['id']}: duplicate characteristics found"
+                )
+
+            for characteristic in characteristics:
+                if characteristic not in valid_characteristics:
+                    validation_errors.append(
+                        f"{item['id']}: unknown characteristic '{characteristic}'"
+                    )
+
+    if validation_errors:
+        print("Feature validation failed:")
+        for error in validation_errors:
+            print(" -", error)
+        return 1
+
+    print("Feature validation passed.")
     report = evaluate(enriched)
     inspect_missed_items(enriched, report)
 

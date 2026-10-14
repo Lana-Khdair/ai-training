@@ -115,6 +115,15 @@ def clean_item(raw, known_categories: list[str]):
         elif found not in categories:
             categories.append(found)
 
+    item_id = str(raw["id"]).strip()
+    item_name = collapse_spaces(str(raw["name"]))
+
+    if not item_id:
+        reasons.append("id is empty after normalization")
+
+    if not item_name:
+        reasons.append("name is empty after normalization")
+
     if reasons:
         return None, reasons, warnings
 
@@ -131,8 +140,8 @@ def clean_item(raw, known_categories: list[str]):
     had_popular_tag = any(isinstance(t, str) and t.strip().lower() == "popular" for t in raw.get("tags") or [])
 
     item = {
-        "id": str(raw["id"]).strip(),
-        "name": collapse_spaces(str(raw["name"])),
+        "id": item_id,
+        "name": item_name,
         "primary_category": categories[0],
         "categories": categories,
         "price": round(price, 2),
