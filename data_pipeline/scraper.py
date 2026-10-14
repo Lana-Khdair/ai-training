@@ -10,7 +10,7 @@ BASE_URL = "https://foodnevercome.com"
 ORDER_URL = f"{BASE_URL}/order"
 HEADERS = {"User-Agent": "FoodMenuPipeline/1.0 (student project;)"}
 TIMEOUT = 20
-RAW_DIR = Path("data/raw")
+RAW_DIR = Path(__file__).resolve().parent / "data" / "raw"
 
 CHUNK_RE = re.compile(r"/_next/static/chunks/[\w\-]+\.js")
 FOODS_RE = re.compile(r'"foods"\s*,\s*0\s*,\s*\[')
