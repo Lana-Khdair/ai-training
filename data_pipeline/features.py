@@ -460,8 +460,59 @@ def main(argv: list[str]) -> int:
         return 1
 
     extractor = FeatureExtractor()
-    enriched = [{**item, **features} for item, features in zip(items, extractor.extract_many(items))]
 
+    # Find the most recent previous feature file, excluding this run's output.
+    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FEATURES_DIR / (path.stem.removesuffix("_clean") + "_features.json")
+
+    previous_files = sorted(
+        (p for p in FEATURES_DIR.glob("*_features.json")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    previous_items = []
+    if previous_files:
+        previous_data = json.loads(
+            previous_files[0].read_text(encoding="utf-8")
+        )
+        previous_items = previous_data.get("items", [])
+        print(f"Previous features: {previous_files[0].name}")
+
+        # Recalculate everything if the extraction lexicon changed.
+        if previous_data.get("lexicon_version") != LEXICON_VERSION:
+            print("Lexicon version changed; recalculating all features.")
+            previous_items = []
+
+    changed_items, removed_ids = get_item_changes(items, previous_items)
+    previous_by_id = {item["id"]: item for item in previous_items}
+
+    print(f"Total items: {len(items)}")
+    print(f"New or modified items: {len(changed_items)}")
+    print(f"Removed items: {len(removed_ids)}")
+
+    extracted = extractor.extract_many(changed_items) if changed_items else []
+    extracted_by_id = {
+        item["id"]: {**item, **features}
+        for item, features in zip(changed_items, extracted)
+    }
+
+    enriched = []
+    for item in items:
+        item_id = item["id"]
+        if item_id in extracted_by_id:
+            enriched.append(extracted_by_id[item_id])
+        elif item_id in previous_by_id:
+            old_item = previous_by_id[item_id]
+            enriched.append({
+                **old_item,
+                **item,
+                "ingredients": old_item.get("ingredients", []),
+                "characteristics": old_item.get("characteristics", []),
+            })
+        else:
+            features = extractor.extract(item)
+            enriched.append({**item, **features})
     # Validate extracted features before saving.
     valid_characteristics = set(CHARACTERISTICS)
     valid_ingredients = set(INGREDIENTS)
