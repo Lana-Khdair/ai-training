@@ -64,6 +64,70 @@ def clean_tags(tags) -> list[str]:
             out.append(t)
     return out
 
+def clean_modifier_groups(groups) -> list[dict]:
+    """Preserve valid structured customization groups."""
+    if not isinstance(groups, list):
+        return []
+
+    cleaned = []
+
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+
+        group_id = group.get("id")
+        options = group.get("options")
+
+        if not isinstance(group_id, str) or not group_id.strip():
+            continue
+        if not isinstance(options, list):
+            continue
+
+        valid_options = []
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+
+            option_id = option.get("id")
+            option_name = option.get("name")
+
+            if not isinstance(option_id, str) or not option_id.strip():
+                continue
+            if not isinstance(option_name, str) or not option_name.strip():
+                continue
+
+            cleaned_option = {
+                "id": option_id.strip(),
+                "name": collapse_spaces(option_name),
+            }
+
+            if "priceDelta" in option:
+                delta = to_number(option["priceDelta"])
+                if delta is None:
+                    continue
+                cleaned_option["priceDelta"] = round(delta, 2)
+
+            if "default" in option:
+                cleaned_option["default"] = bool(option["default"])
+
+            valid_options.append(cleaned_option)
+
+        if not valid_options:
+            continue
+
+        cleaned_group = {
+            "id": group_id.strip(),
+            "options": valid_options,
+        }
+
+        for field in ("name", "required", "minSelections", "maxSelections"):
+            if field in group:
+                cleaned_group[field] = group[field]
+
+        cleaned.append(cleaned_group)
+
+    return cleaned
+
 
 # ---------- one item ----------
 
@@ -151,6 +215,9 @@ def clean_item(raw, known_categories: list[str]):
         "tags": tags,
         "popular": bool(raw.get("popular")) or had_popular_tag,
         "image": image,
+        "modifier_groups": clean_modifier_groups(
+            raw.get("modifier_groups", [])
+        ),
     }
     return item, [], warnings
 

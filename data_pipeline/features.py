@@ -418,7 +418,12 @@ def get_item_changes(
 
     changed_items = []
 
-    fields_to_compare = ("name", "price", "description_clean")
+    fields_to_compare = (
+        "name",
+        "price",
+        "description_clean",
+        "modifier_groups",
+    )
 
     for item in current_items:
         previous = previous_by_id.get(item["id"])
