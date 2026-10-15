@@ -453,7 +453,38 @@ def main(argv: list[str]) -> int:
         print(f"No input file found. Pass one: python features.py path/to/x_clean.json  (looked in {CLEAN_DIR})")
         return 2
 
-    menu = json.loads(path.read_text(encoding="utf-8"))
+
+    try:
+        menu = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"FAILED: Could not read valid JSON from {path}: {exc}")
+        return 1
+
+    if not isinstance(menu, dict):
+        print("FAILED: The input JSON must contain an object.")
+        return 1
+
+    items = menu.get("items")
+    if not isinstance(items, list) or not items:
+        print("FAILED: The file must contain a non-empty items list.")
+        return 1
+
+    seen_ids = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            print(f"FAILED: Item at index {index} must be an object.")
+            return 1
+
+        item_id = item.get("id")
+        if not isinstance(item_id, str) or not item_id.strip():
+            print(f"FAILED: Item at index {index} has a missing or invalid ID.")
+            return 1
+
+        if item_id in seen_ids:
+            print(f"FAILED: Duplicate item ID: {item_id}")
+            return 1
+
+        seen_ids.add(item_id)
     items = menu.get("items")
     if not isinstance(items, list) or not items:
         print("FAILED: the file has no items.")
