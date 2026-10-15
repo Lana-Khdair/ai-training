@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 import requests
+from urllib.parse import urljoin
 
 BASE_URL = "https://foodnevercome.com"
 ORDER_URL = f"{BASE_URL}/order"
@@ -30,10 +31,17 @@ def fetch_text(url: str) -> str:
 
 
 def find_chunk_urls(html: str) -> list[str]:
-    """All unique JS chunk URLs mentioned anywhere in the page"""
-    unique = list(dict.fromkeys(CHUNK_RE.findall(html)))
-    return [BASE_URL + path for path in unique]
+    pattern = (
+        r'"(/_next/static/chunks/[^"]+?\.js)"'
+        r'|\\\\\"(/_next/static/chunks/[^\\"]+?\.js)\\\\\"'
+    )
 
+    paths = []
+    for match in re.finditer(pattern, html):
+        path = next(group for group in match.groups() if group)
+        paths.append(path)
+
+    return list(dict.fromkeys(urljoin(BASE_URL, p) for p in paths))
 
 def download_menu_chunk(chunk_urls: list[str]) -> tuple[str, str]:
     """Return (url, js_text) of the chunk that contains the menu data."""
