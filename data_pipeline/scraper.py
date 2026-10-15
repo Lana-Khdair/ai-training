@@ -17,6 +17,7 @@ CHUNK_RE = re.compile(r"/_next/static/chunks/[\w\-]+\.js")
 FOODS_RE = re.compile(r'"foods"\s*,\s*0\s*,\s*\[')
 CATEGORIES_RE = re.compile(r'"categories"\s*,\s*0\s*,\s*\[')
 STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+MODIFIERS_RE = re.compile(r"modifierGroups")
 
 
 class ScrapeError(Exception):
@@ -101,19 +102,118 @@ def js_literal_to_json(text: str):
     out.append(_fix_js_segment(text[pos:]))
     return json.loads("".join(out))
 
+def extract_modifier_groups(js: str) -> dict:
+    """Extract the four default customization groups from the menu JS chunk."""
+    marker = re.search(
+        r'let\s+r\s*=\s*(\[\s*\{.*?\}\s*\])\s*,\s*t\s*=',
+        js,
+        re.DOTALL,
+    )
+
+    if not marker:
+        raise ScrapeError("Pizza modifier groups not found.")
+
+    pizza_text = marker.group(1)
+
+    # Extract each array using the same bracket-aware parser.
+    arrays = {}
+
+    patterns = {
+        "pizza": r'let\s+r\s*=\s*\[',
+        "burgers": r'\bt\s*=\s*\[',
+        "pasta": r'\bo\s*=\s*\[',
+        "fried_chicken": r'\bc\s*=\s*\[',
+    }
+
+    arrays = {}
+
+    for category, pattern in patterns.items():
+        matches = re.finditer(pattern, js)
+
+        found = False
+
+        for match in matches:
+            array_start = match.end() - 1
+
+            array_text = extract_array(
+                js[array_start:],
+                re.compile(r'\['),
+            )
+
+            try:
+                parsed = js_literal_to_json(array_text)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            # Accept only arrays of modifier-group objects.
+            if (
+                isinstance(parsed, list)
+                and parsed
+                and all(
+                    isinstance(group, dict)
+                    and isinstance(group.get("id"), str)
+                    and isinstance(group.get("options"), list)
+                    for group in parsed
+                )
+            ):
+                arrays[category] = parsed
+                found = True
+                break
+
+        if not found:
+            raise ScrapeError(
+                f"Valid modifier group array for {category!r} not found."
+            )
+
+    return arrays
+
 
 def scrape_menu() -> dict:
     html = fetch_text(ORDER_URL)
     chunk_urls = find_chunk_urls(html)
+
     if not chunk_urls:
-        raise ScrapeError("No JS chunks found on /order - site structure may have changed.")
+        raise ScrapeError(
+            "No JS chunks found on /order - site structure may have changed."
+        )
+
     chunk_url, js = download_menu_chunk(chunk_urls)
 
     categories = js_literal_to_json(extract_array(js, CATEGORIES_RE))
     foods = js_literal_to_json(extract_array(js, FOODS_RE))
+    modifier_groups = extract_modifier_groups(js)
 
-    if not isinstance(foods, list) or not foods or not all(isinstance(f, dict) and "id" in f for f in foods):
-        raise ScrapeError("Extracted menu does not look like a list of items with ids.")
+    if (
+        not isinstance(foods, list)
+        or not foods
+        or not all(isinstance(food, dict) and "id" in food for food in foods)
+    ):
+        raise ScrapeError(
+            "Extracted menu does not look like a list of items with ids."
+        )
+
+    # Associate the default customization groups with each food.
+    category_mapping = {
+        "pizza": "pizza",
+        "burgers": "burgers",
+        "pasta": "pasta",
+        "fried chicken": "fried_chicken",
+    }
+
+    for food in foods:
+        # Preserve the original category field.
+        category = food.get("category", "")
+
+        if isinstance(category, str):
+            category_key = category.strip().lower()
+        else:
+            category_key = ""
+
+        modifier_key = category_mapping.get(category_key)
+        groups = modifier_groups.get(modifier_key, []) if modifier_key else []
+
+        # Keep food-level customizations separate from the top-level definitions.
+        food["modifier_groups"] = groups
 
     return {
         "scraped_at": datetime.now(timezone.utc).isoformat(),
@@ -121,8 +221,8 @@ def scrape_menu() -> dict:
         "chunk_url": chunk_url,
         "categories": categories,
         "foods": foods,
+        "modifier_groups": modifier_groups,
     }
-
 
 def save_snapshot(payload: dict) -> Path:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
