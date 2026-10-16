@@ -4,8 +4,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-
-LEXICON_VERSION = "1"
+import hashlib
 
 _INGREDIENTS = """
 # proteins
@@ -177,6 +176,11 @@ crispy: crisp | crisped | crispier | crispiest | crunchy | crunch | crunchier | 
 CHARACTERISTIC_BLOCKERS = {
     "sweet": ["sweet potato"],
 }
+RULES_VERSION = "1"  # bump by hand only when you change matching CODE (e.g. NEGATION_WINDOW)
+
+LEXICON_VERSION = hashlib.sha256(
+    (_INGREDIENTS + _CHARACTERISTICS + repr(CHARACTERISTIC_BLOCKERS) + RULES_VERSION).encode("utf-8")
+).hexdigest()[:12]
 
 # Site tags that correspond to one of our characteristics (used to measure accuracy).
 TAG_TO_CHARACTERISTIC = {
