@@ -598,23 +598,14 @@ def main(argv: list[str]) -> int:
 
     print("Feature validation passed.")
     report = evaluate(enriched)
-    inspect_missed_items(enriched, report)
 
     print(f"Input        : {path}")
     print(f"Items        : {len(enriched)}")
     print(f"Avg per item : {report['avg_ingredients']} ingredients, {report['avg_characteristics']} characteristics")
     print(f"Tag check    : {report['tag_traits_found']}/{report['tag_traits_expected']} "
           f"site tags confirmed by the text (recall {report['tag_recall']})")
-    for key, label in (("items_without_ingredients", "No ingredients found"),
-                       ("items_without_characteristics", "No characteristics found")):
-        if report[key]:
-            print(f"{label}: {', '.join(report[key])}")
     for line in report["vegetarian_conflicts"]:
         print(f"  CONFLICT {line}")
-    for line in report["missed_tag_traits"][:15]:
-        print(f"  missed   {line}")
-    if len(report["missed_tag_traits"]) > 15:
-        print(f"  ... and {len(report['missed_tag_traits']) - 15} more")
 
     FEATURES_DIR.mkdir(parents=True, exist_ok=True)
     out = FEATURES_DIR / (path.stem.removesuffix("_clean") + "_features.json")
