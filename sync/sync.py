@@ -7,12 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
-FEATURES_DIR = DATA_DIR / "features"
-DB_PATH = DATA_DIR / "menu.db"
-
-MAX_REMOVED_RATIO = 0.30
-MIN_ACTIVE_FOR_GUARD = 10
+from config.settings import DATA_DIR, FEATURES_DIR, DB_PATH, MAX_REMOVED_RATIO, MIN_ACTIVE_FOR_GUARD
 
 SCALAR_FIELDS = ("name", "primary_category", "price", "calories", "description", "image", "popular")
 JSON_FIELDS = ("categories", "tags", "ingredients", "characteristics", "modifier_groups")
@@ -241,7 +236,7 @@ def latest_features() -> Path | None:
 def main(argv: list[str]) -> int:
     path = Path(argv[1]) if len(argv) > 1 else latest_features()
     if path is None or not path.exists():
-        print(f"No input file found. Pass one: python -m data_pipeline.sync path/to/x_features.json "
+        print(f"No input file found. Pass one: python -m sync path/to/x_features.json "
               f"(looked in {FEATURES_DIR})")
         return 2
 

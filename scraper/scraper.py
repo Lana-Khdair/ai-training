@@ -2,16 +2,15 @@
 from __future__ import annotations
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 import requests
 from urllib.parse import urljoin
 
-BASE_URL = "https://foodnevercome.com"
-ORDER_URL = f"{BASE_URL}/order"
-HEADERS = {"User-Agent": "FoodMenuPipeline/1.0 (student project;)"}
-TIMEOUT = 20
-RAW_DIR = Path(__file__).resolve().parent / "data" / "raw"
+from config.settings import BASE_URL, ORDER_URL, RAW_DIR, USER_AGENT, REQUEST_TIMEOUT as TIMEOUT
+
+HEADERS = {"User-Agent": USER_AGENT}
 
 CHUNK_RE = re.compile(r"/_next/static/chunks/[\w\-]+\.js")
 FOODS_RE = re.compile(r'"foods"\s*,\s*0\s*,\s*\[')
@@ -231,10 +230,13 @@ def save_snapshot(payload: dict) -> Path:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
-
-if __name__ == "__main__":
+def run() -> int:
     data = scrape_menu()
     path = save_snapshot(data)
     print(f"Scraped {len(data['foods'])} items in {len(data['categories'])} categories")
     print(f"Source chunk: {data['chunk_url']}")
     print(f"Saved to: {path}")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(run())

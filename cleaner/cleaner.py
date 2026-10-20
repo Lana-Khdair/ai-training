@@ -8,13 +8,11 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+from config.settings import RAW_DIR, CLEAN_DIR, MAX_REJECT_RATIO
+
 DATA_DIR = Path(__file__).resolve().parent / "data"
-RAW_DIR = DATA_DIR / "raw"
-CLEAN_DIR = DATA_DIR / "clean"
-
 REQUIRED_FIELDS = ("id", "name", "price", "category")
-MAX_REJECT_RATIO = 0.20  # more than 20% rejected -> something is wrong with the source
-
 SPELLING_FIXES = {"sharable": "shareable", "favourite": "favorite", "flavour": "flavor"}
 SPELLING_RE = re.compile(r"\b(" + "|".join(SPELLING_FIXES) + r")\b")
 DASHES_RE = re.compile(r"\s*[\u2013\u2014]\s*")

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 
+from config.settings import CLEAN_DIR, FEATURES_DIR
+
 _INGREDIENTS = """
 # proteins
 beef
@@ -218,8 +220,6 @@ CHARACTERISTICS = _parse(_CHARACTERISTICS)
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
-CLEAN_DIR = DATA_DIR / "clean"
-FEATURES_DIR = DATA_DIR / "features"
 
 MODEL_NAME = "en_core_web_sm"
 NEGATORS = {"no", "not", "without", "never", "zero", "non"}
