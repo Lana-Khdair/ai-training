@@ -193,6 +193,25 @@ TAG_TO_CHARACTERISTIC = {
     "cold": "cold",
 }
 
+_TRAIT_ALIASES: dict[str, set[str]] = {}
+for _tag, _trait in TAG_TO_CHARACTERISTIC.items():
+    _TRAIT_ALIASES.setdefault(_trait, set()).add(_tag)
+
+
+def merge_tags(tags, characteristics):
+    merged, seen = [], set()
+    for tag in tags or []:
+        key = tag.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(tag)
+    for trait in characteristics or []:
+        if ({trait} | _TRAIT_ALIASES.get(trait, set())) & seen:
+            continue
+        seen.add(trait)
+        merged.append(trait)
+    return merged
+
 # Ingredients that contradict a "vegetarian" tag.
 MEAT_AND_FISH = {
     "beef", "chicken", "pork", "bacon", "ham", "turkey", "sausage", "pepperoni", "pancetta",
@@ -217,9 +236,6 @@ def _parse(block: str) -> dict[str, list[str]]:
 
 INGREDIENTS = _parse(_INGREDIENTS)
 CHARACTERISTICS = _parse(_CHARACTERISTICS)
-
-
-DATA_DIR = Path(__file__).resolve().parent / "data"
 
 MODEL_NAME = "en_core_web_sm"
 NEGATORS = {"no", "not", "without", "never", "zero", "non"}
@@ -489,17 +505,12 @@ def main(argv: list[str]) -> int:
             return 1
 
         seen_ids.add(item_id)
-    items = menu.get("items")
+
     if not isinstance(items, list) or not items:
         print("FAILED: the file has no items.")
         return 1
 
     extractor = FeatureExtractor()
-
-    # Find the most recent previous feature file, excluding this run's output.
-    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
-    out = FEATURES_DIR / (path.stem.removesuffix("_clean") + "_features.json")
-
     previous_files = sorted(
         (p for p in FEATURES_DIR.glob("*_features.json")),
         key=lambda p: p.stat().st_mtime,
@@ -507,11 +518,15 @@ def main(argv: list[str]) -> int:
     )
 
     previous_items = []
+    previous_chars = {}
     if previous_files:
         previous_data = json.loads(
             previous_files[0].read_text(encoding="utf-8")
         )
         previous_items = previous_data.get("items", [])
+        previous_chars = previous_data.get("extracted_characteristics") or {
+            i["id"]: i.get("characteristics", []) for i in previous_items
+        }
         print(f"Previous features: {previous_files[0].name}")
 
         # Recalculate everything if the extraction lexicon changed.
@@ -543,7 +558,8 @@ def main(argv: list[str]) -> int:
                 **old_item,
                 **item,
                 "ingredients": old_item.get("ingredients", []),
-                "characteristics": old_item.get("characteristics", []),
+                "characteristics": previous_chars.get(item_id, []),
+
             })
         else:
             features = extractor.extract(item)
@@ -607,6 +623,12 @@ def main(argv: list[str]) -> int:
     for line in report["vegetarian_conflicts"]:
         print(f"  CONFLICT {line}")
 
+    output_items = []
+    for item in enriched:
+        clean_item = {k: v for k, v in item.items() if k != "characteristics"}
+        clean_item["tags"] = merge_tags(item.get("tags"), item.get("characteristics"))
+        output_items.append(clean_item)
+
     FEATURES_DIR.mkdir(parents=True, exist_ok=True)
     out = FEATURES_DIR / (path.stem.removesuffix("_clean") + "_features.json")
     import spacy
@@ -616,7 +638,8 @@ def main(argv: list[str]) -> int:
         "lexicon_version": LEXICON_VERSION,
         "spacy_version": spacy.__version__,
         "model": f"{MODEL_NAME} {extractor.nlp.meta['version']}",
-        "items": enriched,
+        "items": output_items,
+        "extracted_characteristics": {i["id"]: i["characteristics"] for i in enriched},
         "report": report,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Saved        : {out}")

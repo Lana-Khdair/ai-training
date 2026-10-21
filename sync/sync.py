@@ -10,7 +10,7 @@ from pathlib import Path
 from config.settings import DATA_DIR, FEATURES_DIR, DB_PATH, MAX_REMOVED_RATIO, MIN_ACTIVE_FOR_GUARD
 
 SCALAR_FIELDS = ("name", "primary_category", "price", "calories", "description", "image", "popular")
-JSON_FIELDS = ("categories", "tags", "ingredients", "characteristics", "modifier_groups")
+JSON_FIELDS = ("categories", "tags", "ingredients", "modifier_groups")
 TRACKED_FIELDS = SCALAR_FIELDS + JSON_FIELDS
 
 SCHEMA = """
@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS items (
     categories       TEXT NOT NULL,   -- JSON list
     tags             TEXT NOT NULL,   -- JSON list
     ingredients      TEXT NOT NULL,   -- JSON list
-    characteristics  TEXT NOT NULL,   -- JSON list
     modifier_groups  TEXT NOT NULL,   -- JSON list
     active           INTEGER NOT NULL DEFAULT 1,
     first_seen       TEXT NOT NULL,

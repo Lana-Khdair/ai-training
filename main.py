@@ -9,9 +9,6 @@ import sync
 from runner import run_pipeline
 from config.settings import SCRAPE_ATTEMPTS, SCRAPE_RETRY_WAIT
 
-# (name, function to call, max attempts, seconds between attempts)
-# Only the scraper is retried: network problems are common there, while a
-# failing cleaner/features/sync is a real problem a retry won't fix.
 STAGES = [
     ("scrape", scraper.run, SCRAPE_ATTEMPTS, SCRAPE_RETRY_WAIT),
     ("clean", cleaner.run, 1, 0),
