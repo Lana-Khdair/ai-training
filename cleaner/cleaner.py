@@ -7,9 +7,9 @@ import sys
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-
-
-from config.settings import RAW_DIR, CLEAN_DIR, MAX_REJECT_RATIO
+from statistics import median
+from collections import defaultdict
+from config.settings import RAW_DIR, CLEAN_DIR, MAX_REJECT_RATIO, MIN_SAMPLES
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 REQUIRED_FIELDS = ("id", "name", "price", "category")
@@ -219,6 +219,26 @@ def clean_item(raw, known_categories: list[str]):
     }
     return item, [], warnings
 
+def impute_calories(items: list[dict]) -> int:
+    """Fill missing calories with the category median. Returns how many were filled."""
+    by_cat = defaultdict(list)
+    for it in items:
+        if it["calories"] is not None:
+            by_cat[it["primary_category"]].append(it["calories"])
+
+    all_values = [c for vals in by_cat.values() for c in vals]
+    global_median = median(all_values) if all_values else None
+
+    filled = 0
+    for it in items:
+        if it["calories"] is not None:
+            continue
+        vals = by_cat.get(it["primary_category"], [])
+        guess = median(vals) if len(vals) >= MIN_SAMPLES else global_median
+        if guess is not None:
+            it["calories"] = int(round(guess))
+            filled += 1
+    return filled
 
 # ---------- whole snapshot ----------
 
@@ -256,6 +276,9 @@ def clean_menu(snapshot: dict) -> dict:
 
     total = len(foods)
     ratio = len(rejected) / total
+
+    imputed = impute_calories(items)
+
     ok = bool(items) and ratio <= MAX_REJECT_RATIO
     return {
         "ok": ok,
@@ -263,9 +286,9 @@ def clean_menu(snapshot: dict) -> dict:
         "rejected": rejected,
         "warnings": warnings,
         "stats": {"raw_items": total, "kept": len(items), "rejected": len(rejected),
-                  "reject_ratio": round(ratio, 3), "warnings": len(warnings)},
+                  "reject_ratio": round(ratio, 3), "warnings": len(warnings),
+                  "calories_imputed": imputed},
     }
-
 
 # ---------- files / command line ----------
 
@@ -291,6 +314,7 @@ def main(argv: list[str]) -> int:
     print(f"Input : {path}")
     print(f"Items : {stats['raw_items']} raw -> {stats['kept']} kept, {stats['rejected']} rejected, "
           f"{stats['warnings']} warnings")
+    print(f"Imputed calories : {stats['calories_imputed']}")
     for entry in result["rejected"]:
         print(f"  REJECTED {entry['id']}: {'; '.join(entry['reasons'])}")
     for warning in result["warnings"][:20]:
