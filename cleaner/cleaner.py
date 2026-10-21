@@ -12,7 +12,7 @@ from collections import defaultdict
 from config.settings import RAW_DIR, CLEAN_DIR, MAX_REJECT_RATIO, MIN_SAMPLES
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
-REQUIRED_FIELDS = ("id", "name", "price", "category")
+REQUIRED_FIELDS = ("id", "name", "category")
 SPELLING_FIXES = {"sharable": "shareable", "favourite": "favorite", "flavour": "flavor"}
 SPELLING_RE = re.compile(r"\b(" + "|".join(SPELLING_FIXES) + r")\b")
 DASHES_RE = re.compile(r"\s*[\u2013\u2014]\s*")
@@ -142,10 +142,12 @@ def clean_item(raw, known_categories: list[str]):
     reasons += [f"missing required field: {f}" for f in missing]
 
     price = None
-    if "price" not in missing:
+    if raw.get("price") is None or (isinstance(raw.get("price"), str) and not raw["price"].strip()):
+        warnings.append("price missing")
+    else:
         price = to_number(raw["price"])
         if price is None or price < 0:
-            reasons.append(f"invalid price: {raw['price']!r}")
+            reasons.append(f"invalid price: {raw['price']!r}")   # present but garbage -> still rejected
         elif price == 0:
             warnings.append("price is 0")
 
@@ -206,7 +208,7 @@ def clean_item(raw, known_categories: list[str]):
         "name": item_name,
         "primary_category": categories[0],
         "categories": categories,
-        "price": round(price, 2),
+        "price": round(price, 2) if price is not None else None,
         "calories": int(round(calories)) if calories is not None else None,
         "description": description,
         "description_clean": clean_description(description),
@@ -219,26 +221,36 @@ def clean_item(raw, known_categories: list[str]):
     }
     return item, [], warnings
 
-def impute_calories(items: list[dict]) -> int:
-    """Fill missing calories with the category median. Returns how many were filled."""
+def _fill_with_median(items: list[dict], field: str, convert, usable=lambda v: True) -> int:
+    """Fill missing `field` with the category median (global median fallback). Returns count filled."""
     by_cat = defaultdict(list)
     for it in items:
-        if it["calories"] is not None:
-            by_cat[it["primary_category"]].append(it["calories"])
+        v = it[field]
+        if v is not None and usable(v):
+            by_cat[it["primary_category"]].append(v)
 
-    all_values = [c for vals in by_cat.values() for c in vals]
+    all_values = [v for vals in by_cat.values() for v in vals]
     global_median = median(all_values) if all_values else None
 
     filled = 0
     for it in items:
-        if it["calories"] is not None:
+        if it[field] is not None:
             continue
         vals = by_cat.get(it["primary_category"], [])
         guess = median(vals) if len(vals) >= MIN_SAMPLES else global_median
         if guess is not None:
-            it["calories"] = int(round(guess))
+            it[field] = convert(guess)
             filled += 1
     return filled
+
+
+def impute_calories(items: list[dict]) -> int:
+    return _fill_with_median(items, "calories", lambda v: int(round(v)))
+
+
+def impute_prices(items: list[dict]) -> int:
+    # price == 0 is already flagged as suspicious, so it is not used as a sample
+    return _fill_with_median(items, "price", lambda v: round(v, 2), usable=lambda v: v > 0)
 
 # ---------- whole snapshot ----------
 
@@ -278,6 +290,7 @@ def clean_menu(snapshot: dict) -> dict:
     ratio = len(rejected) / total
 
     imputed = impute_calories(items)
+    prices_imputed = impute_prices(items)
 
     ok = bool(items) and ratio <= MAX_REJECT_RATIO
     return {
@@ -287,7 +300,7 @@ def clean_menu(snapshot: dict) -> dict:
         "warnings": warnings,
         "stats": {"raw_items": total, "kept": len(items), "rejected": len(rejected),
                   "reject_ratio": round(ratio, 3), "warnings": len(warnings),
-                  "calories_imputed": imputed},
+                  "calories_imputed": imputed, "prices_imputed": prices_imputed},
     }
 
 # ---------- files / command line ----------
@@ -315,6 +328,7 @@ def main(argv: list[str]) -> int:
     print(f"Items : {stats['raw_items']} raw -> {stats['kept']} kept, {stats['rejected']} rejected, "
           f"{stats['warnings']} warnings")
     print(f"Imputed calories : {stats['calories_imputed']}")
+    print(f"Imputed prices   : {stats['prices_imputed']}")
     for entry in result["rejected"]:
         print(f"  REJECTED {entry['id']}: {'; '.join(entry['reasons'])}")
     for warning in result["warnings"][:20]:
