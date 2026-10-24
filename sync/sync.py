@@ -18,7 +18,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
     id               TEXT PRIMARY KEY,
     name             TEXT NOT NULL,
-    primary_category TEXT NOT NULL,
+    primary_category TEXT,
     price            REAL NOT NULL,
     price_imputed    INTEGER NOT NULL DEFAULT 0,
     calories         INTEGER,

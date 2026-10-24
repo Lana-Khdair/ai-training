@@ -7,12 +7,12 @@ import sys
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import median
+from statistics import mean, median
 from collections import defaultdict
 from config.settings import RAW_DIR, CLEAN_DIR, MAX_REJECT_RATIO, MIN_SAMPLES
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
-REQUIRED_FIELDS = ("id", "name", "category")
+REQUIRED_FIELDS = ("id", "name")
 SPELLING_FIXES = {"sharable": "shareable", "favourite": "favorite", "flavour": "flavor"}
 SPELLING_RE = re.compile(r"\b(" + "|".join(SPELLING_FIXES) + r")\b")
 DASHES_RE = re.compile(r"\s*[\u2013\u2014]\s*")
@@ -162,14 +162,20 @@ def clean_item(raw, known_categories: list[str]):
     # Categories: one list, main category first.
     canonical = {c.lower(): c for c in known_categories}
     categories: list[str] = []
-    if "category" not in missing:
-        primary = canonical.get(str(raw["category"]).strip().lower())
+    raw_cat = raw.get("category")
+    if raw_cat is None or (isinstance(raw_cat, str) and not raw_cat.strip()):
+        warnings.append("category missing")
+    else:
+        primary = canonical.get(str(raw_cat).strip().lower())
         if primary is None:
-            reasons.append(f"unknown category: {raw['category']!r}")
+            reasons.append(f"unknown category: {raw_cat!r}")   # present but not in the menu -> still rejected
         else:
             categories.append(primary)
+
     extras = raw.get("categories")
-    if extras is not None and not isinstance(extras, list):
+    if not categories:
+        extras = []                  # no main category -> ignore the extras
+    elif extras is not None and not isinstance(extras, list):
         warnings.append("'categories' is not a list - ignored")
         extras = []
     for extra in extras or []:
@@ -206,7 +212,7 @@ def clean_item(raw, known_categories: list[str]):
     item = {
         "id": item_id,
         "name": item_name,
-        "primary_category": categories[0],
+        "primary_category": categories[0] if categories else None,
         "categories": categories,
         "price": round(price, 2) if price is not None else None,
         "price_imputed": False,
@@ -222,36 +228,41 @@ def clean_item(raw, known_categories: list[str]):
         ),
     }
     return item, [], warnings
-
-def _fill_with_median(items: list[dict], field: str, flag: str, convert, usable=lambda v: True) -> int:
+def _fill_with_median(items: list[dict], field: str, flag: str, convert,
+                      usable=lambda v: True, global_fallback: bool = False) -> int:
     by_cat = defaultdict(list)
+    all_values = []
     for it in items:
         v = it[field]
         if v is not None and usable(v):
-            by_cat[it["primary_category"]].append(v)
+            all_values.append(v)
+            if it["primary_category"] is not None:
+                by_cat[it["primary_category"]].append(v)
 
-    all_values = [v for vals in by_cat.values() for v in vals]
-    global_median = median(all_values) if all_values else None
+    global_mean = mean(all_values) if (global_fallback and all_values) else None
 
     filled = 0
     for it in items:
         if it[field] is not None:
             continue
-        vals = by_cat.get(it["primary_category"], [])
-        guess = median(vals) if len(vals) >= MIN_SAMPLES else global_median
+        vals = by_cat.get(it["primary_category"], [])   # no category -> empty list
+        guess = median(vals) if len(vals) >= MIN_SAMPLES else global_mean
         if guess is not None:
             it[field] = convert(guess)
             it[flag] = True
             filled += 1
     return filled
 
+
 def impute_calories(items: list[dict]) -> int:
-    return _fill_with_median(items, "calories", "calories_imputed", lambda v: int(round(v)))
+    return _fill_with_median(items, "calories", "calories_imputed",
+                             lambda v: int(round(v)))
 
 
 def impute_prices(items: list[dict]) -> int:
-    return _fill_with_median(items, "price", "price_imputed", lambda v: round(v, 2), usable=lambda v: v > 0)
-
+    return _fill_with_median(items, "price", "price_imputed",
+                             lambda v: round(v, 2), usable=lambda v: v > 0,
+                             global_fallback=True)
 # ---------- whole snapshot ----------
 
 def clean_menu(snapshot: dict) -> dict:
