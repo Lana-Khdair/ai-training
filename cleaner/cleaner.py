@@ -209,7 +209,9 @@ def clean_item(raw, known_categories: list[str]):
         "primary_category": categories[0],
         "categories": categories,
         "price": round(price, 2) if price is not None else None,
+        "price_imputed": False,
         "calories": int(round(calories)) if calories is not None else None,
+        "calories_imputed": False,
         "description": description,
         "description_clean": clean_description(description),
         "tags": tags,
@@ -221,8 +223,7 @@ def clean_item(raw, known_categories: list[str]):
     }
     return item, [], warnings
 
-def _fill_with_median(items: list[dict], field: str, convert, usable=lambda v: True) -> int:
-    """Fill missing `field` with the category median (global median fallback). Returns count filled."""
+def _fill_with_median(items: list[dict], field: str, flag: str, convert, usable=lambda v: True) -> int:
     by_cat = defaultdict(list)
     for it in items:
         v = it[field]
@@ -240,17 +241,16 @@ def _fill_with_median(items: list[dict], field: str, convert, usable=lambda v: T
         guess = median(vals) if len(vals) >= MIN_SAMPLES else global_median
         if guess is not None:
             it[field] = convert(guess)
+            it[flag] = True
             filled += 1
     return filled
 
-
 def impute_calories(items: list[dict]) -> int:
-    return _fill_with_median(items, "calories", lambda v: int(round(v)))
+    return _fill_with_median(items, "calories", "calories_imputed", lambda v: int(round(v)))
 
 
 def impute_prices(items: list[dict]) -> int:
-    # price == 0 is already flagged as suspicious, so it is not used as a sample
-    return _fill_with_median(items, "price", lambda v: round(v, 2), usable=lambda v: v > 0)
+    return _fill_with_median(items, "price", "price_imputed", lambda v: round(v, 2), usable=lambda v: v > 0)
 
 # ---------- whole snapshot ----------
 

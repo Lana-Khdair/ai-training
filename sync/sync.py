@@ -9,7 +9,8 @@ from pathlib import Path
 
 from config.settings import DATA_DIR, FEATURES_DIR, DB_PATH, MAX_REMOVED_RATIO, MIN_ACTIVE_FOR_GUARD
 
-SCALAR_FIELDS = ("name", "primary_category", "price", "calories", "description", "image", "popular")
+SCALAR_FIELDS = ("name", "primary_category", "price", "calories", "description", "image", "popular",
+                 "price_imputed", "calories_imputed")
 JSON_FIELDS = ("categories", "tags", "ingredients", "modifier_groups")
 TRACKED_FIELDS = SCALAR_FIELDS + JSON_FIELDS
 
@@ -19,7 +20,9 @@ CREATE TABLE IF NOT EXISTS items (
     name             TEXT NOT NULL,
     primary_category TEXT NOT NULL,
     price            REAL NOT NULL,
+    price_imputed    INTEGER NOT NULL DEFAULT 0,
     calories         INTEGER,
+    calories_imputed INTEGER NOT NULL DEFAULT 0,
     description      TEXT,
     image            TEXT,
     popular          INTEGER NOT NULL DEFAULT 0,
@@ -80,7 +83,9 @@ def to_row(item: dict) -> dict:
         "name": item["name"],
         "primary_category": item["primary_category"],
         "price": round(float(item["price"]), 2),
+        "price_imputed": int(bool(item.get("price_imputed"))),
         "calories": item.get("calories"),
+        "calories_imputed": int(bool(item.get("calories_imputed"))),
         "description": item.get("description_clean") or item.get("description") or "",
         "image": item.get("image"),
         "popular": int(bool(item.get("popular"))),
@@ -231,7 +236,6 @@ def latest_features() -> Path | None:
     files = sorted(FEATURES_DIR.glob("*_features.json"))
     return files[-1] if files else None
 
-
 def main(argv: list[str]) -> int:
     path = Path(argv[1]) if len(argv) > 1 else latest_features()
     if path is None or not path.exists():
@@ -248,6 +252,7 @@ def main(argv: list[str]) -> int:
         existing = load_existing(conn)
         diff = compute_diff(incoming, existing)
         check_safety(diff, existing)
+
 
         with conn:  # one transaction: commits on success, rolls back on any exception
             cur = conn.execute(
