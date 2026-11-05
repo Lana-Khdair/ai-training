@@ -101,6 +101,17 @@ def _num(x):
     except (TypeError, ValueError):
         return None
 
+def apply_default_order(q: ParsedQuery) -> ParsedQuery:
+    """Only a limit, no text, no order asked -> closest to the limit first."""
+    if not q.semantic_text and q.order_by is None:
+        for field, lo, hi in (("price", q.price_min, q.price_max),
+                              ("calories", q.calories_min, q.calories_max)):
+            if lo is None and hi is None:
+                continue
+            q.order_by = field
+            q.order_dir = "desc" if (hi is not None and lo is None) else "asc"   # only an upper limit -> descending
+            break
+    return q
 
 def build_query(raw: dict) -> ParsedQuery:
     """`raw` = the LLM's answer, a dict shaped like build_schema()."""
@@ -111,7 +122,7 @@ def build_query(raw: dict) -> ParsedQuery:
                if i in allowed_ings and i not in exclude]
     cmin, cmax = _num(raw.get("calories_min")), _num(raw.get("calories_max"))
 
-    return ParsedQuery(
+    q = ParsedQuery(                              # <-- was: return ParsedQuery(
         semantic_text=(raw.get("semantic_text") or "").strip(),
         category=raw.get("category") if raw.get("category") in cats else None,
         price_min=_num(raw.get("price_min")),
@@ -124,3 +135,12 @@ def build_query(raw: dict) -> ParsedQuery:
         order_by=raw.get("order_by") if raw.get("order_by") in ("price", "calories") else None,
         order_dir="desc" if raw.get("order_dir") == "desc" else "asc",
     )
+
+    return apply_default_order(q)
+
+def parse_query(text: str) -> ParsedQuery:
+    text = (text or "").strip()
+    if not text:
+        return ParsedQuery()
+    # TODO (LLM step): raw = <ask the LLM with SYSTEM + build_schema()>; return build_query(raw)
+    return ParsedQuery(semantic_text=text)       # for now: search the raw text, no filters
