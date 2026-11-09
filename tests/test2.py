@@ -1,9 +1,4 @@
-"""Print the retrieval results of each query.
 
-Run from the project root:
-    python -m tests.show_results                          # every query in data/eval_queries.json
-    python -m tests.show_results "cheesy pizza" "under $10"   # only the queries you type
-"""
 import json
 import sys
 from pathlib import Path
