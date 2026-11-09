@@ -1,153 +1,281 @@
-"""Retrieval evaluation. Run from the project root:  python -m evaluation.evaluate
+"""Evaluate the search on eval_cases.json (expected items + estimated/real cosine + checks).
 
-Each case in data/eval_queries.json:
-  query            the text a customer would type
-  type             semantic | hybrid | filters | fallback | none   (only used for the report)
-  expected         dish names that are a GOOD answer (any one of them counts as a hit)
-  mode             optional: the search mode you expect (semantic / hybrid / filters / none)
-  checks           optional rules every returned dish must follow:
-                     price_min, price_max, calories_min, calories_max, category,
-                     include [ingredients], exclude [ingredients],
-                     order_by (price | calories) + order_dir (asc | desc),
-                     expect_fallback (true when the exact filters should find nothing)
+Case format:
+  {"query": "...", "type": "semantic|filters|hybrid|fallback|none", "mode": "...",
+   "expected": [{"name": "Hot Wings", "cosine": 0.62}, ...]  or ["Cheese Pizza", ...],
+   "checks": {"order_by": "price", "order_dir": "asc", "expect_fallback": true,
+              "must_not": [...], "top1": "...", "expect_empty": true},
+   "parsed": {...}}                      # only used with --stub
+
+Metrics (cases that have `expected`):
+  Precision@k, Recall@k, F1@k, HitRate@k, MRR, MAP, nDCG@k (binary),
+  cosnDCG@k  (gain = cosine of the expected item -> rewards putting the MOST similar items first),
+  score_mae / score_bias / score_corr  (engine's returned score vs the cosine in the dataset)
+Checks (pass/total): mode, order, fallback, must_not, top1, empty.
+
+Project layout: training/evaluation/evaluate.py  +  training/data/eval_queries.json
+Just press Run in PyCharm, or add parameters:
+    --llm                          use the real parse_query (default: each case's "parsed" object, no LLM)
+    --data data/eval_queries.json  another dataset file
+    --k 1 3 5 10                   cut-offs
 """
+import argparse
 import json
+import math
+import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
-from retrieval.search import search_always
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
-QUERIES_FILE = Path(__file__).resolve().parents[1] / "data" / "eval_queries.json"
-K = 5
+import retrieval.search as S
+from parsing.query_llm import ParsedQuery as PQ, apply_default_order
 
-
-def norm(s):
-    return str(s).strip().lower()
-
-
-def check_constraints(hits, chk):
-    """Every returned dish must respect the limits the query asked for."""
-    problems = []
-    for h in hits:
-        p = h["payload"]
-        name, price, cal = p["name"], p.get("price"), p.get("calories")
-        ings = {norm(i) for i in p.get("ingredients", [])}
-
-        if "price_max" in chk and price is not None and price > chk["price_max"]:
-            problems.append(f"{name}: price {price} > {chk['price_max']}")
-        if "price_min" in chk and price is not None and price < chk["price_min"]:
-            problems.append(f"{name}: price {price} < {chk['price_min']}")
-        if "calories_max" in chk and cal is not None and cal > chk["calories_max"]:
-            problems.append(f"{name}: {cal} cal > {chk['calories_max']}")
-        if "calories_min" in chk and cal is not None and cal < chk["calories_min"]:
-            problems.append(f"{name}: {cal} cal < {chk['calories_min']}")
-        if "category" in chk and p.get("primary_category") != chk["category"]:
-            problems.append(f"{name}: category {p.get('primary_category')} != {chk['category']}")
-        for ing in chk.get("include", []):
-            if norm(ing) not in ings:
-                problems.append(f"{name}: missing ingredient {ing}")
-        for ing in chk.get("exclude", []):
-            if norm(ing) in ings:
-                problems.append(f"{name}: contains excluded {ing}")
-
-    key = chk.get("order_by")
-    if key:
-        vals = [h["payload"][key] for h in hits if h["payload"].get(key) is not None]
-        want = sorted(vals, reverse=chk.get("order_dir", "asc") == "desc")
-        if vals != want:
-            problems.append(f"not sorted by {key} {chk.get('order_dir', 'asc')}: {vals}")
-    return problems
+LIMIT = 10
+CAP_RECALL = True          # recall@k = hits / min(|expected|, k)
 
 
-def run_case(case):
-    r = search_always(case["query"], limit=K)
-    hits, chk = r["hits"], case.get("checks", {})
-    names = [norm(h["payload"]["name"]) for h in hits]
-    expected = {norm(x) for x in case.get("expected", [])}
-
-    res = {"query": case["query"], "type": case.get("type", "other"),
-           "mode": r["mode"], "fallback": r.get("fallback"),
-           "top": [h["payload"]["name"] for h in hits],
-           "has_expected": bool(expected), "rank": None, "problems": []}
-
-    # 1) did a good dish show up, and how high?
-    if expected:
-        ranks = [i + 1 for i, n in enumerate(names) if n in expected]
-        res["rank"] = min(ranks) if ranks else None
-        if res["rank"] is None:
-            res["problems"].append(f"none of the expected dishes in top {K}")
-
-        found = {n for n in names if n in expected}           # distinct expected dishes returned
-        relevant_returned = sum(1 for n in names if n in expected)
-        res["precision"] = relevant_returned / max(len(names), 1)
-        res["recall"] = len(found) / len(expected)
-        p, rc = res["precision"], res["recall"]
-        res["f1"] = 2 * p * rc / (p + rc) if (p + rc) else 0.0
-
-    # 2) did the parser/search choose the right mode?
-    if "mode" in case and case["mode"] != r["mode"]:
-        res["problems"].append(f"mode {r['mode']} (expected {case['mode']})")
-
-    # 3) fallback should happen only when the case says so
-    want_fb = chk.get("expect_fallback", False)
-    if want_fb and not r.get("fallback"):
-        res["problems"].append("expected a fallback, but the exact search found results")
-    if r.get("fallback") and not want_fb:
-        res["problems"].append(f"unexpected fallback ({r.get('dropped')})")
-
-    # 4) no results at all (except for "none" cases)
-    if not hits and case.get("mode") != "none":
-        res["problems"].append("no results")
-
-    # 5) filters must hold on exact (non-fallback) results; exclusions must ALWAYS hold
-    if not r.get("fallback"):
-        res["problems"] += check_constraints(hits, chk)
-    else:
-        res["problems"] += check_constraints(hits, {"exclude": chk.get("exclude", [])})
-    return res
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower().replace("&", "and")).strip("-")
 
 
-def pct(x):
-    return f"{100 * x:.0f}%"
+def nm(x):
+    return x["name"] if isinstance(x, dict) else x
 
 
-def summarize(results):
-    scored = [r for r in results if r["has_expected"]]
-    n = max(len(scored), 1)
-    hit = lambda k: sum(1 for r in scored if r["rank"] and r["rank"] <= k) / n
-    mrr = sum(1 / r["rank"] for r in scored if r["rank"]) / n
-    ok = sum(1 for r in results if not r["problems"]) / max(len(results), 1)
-    return {"n": len(results), "ranked": len(scored), "hit1": hit(1), "hit3": hit(3),
-            "hit5": hit(5), "mrr": mrr, "ok": ok,
-            "precision": sum(r["precision"] for r in scored) / n,
-            "recall": sum(r["recall"] for r in scored) / n,
-            "f1": sum(r["f1"] for r in scored) / n}
+def dcg(gains):
+    return sum((2 ** g - 1) / math.log2(i + 2) for i, g in enumerate(gains))
 
-def print_row(label, s):
-    print(f"{label:10} n={s['n']:<3} ranked={s['ranked']:<3} "
-          f"Hit@1={pct(s['hit1']):>4} Hit@3={pct(s['hit3']):>4} Hit@5={pct(s['hit5']):>4} "
-          f"MRR={s['mrr']:.2f}  P@{K}={pct(s['precision']):>4} R@{K}={pct(s['recall']):>4} "
-          f"F1={s['f1']:.2f}  checks passed={pct(s['ok'])}")
+
+def mean(xs):
+    xs = [x for x in xs if x is not None]
+    return sum(xs) / len(xs) if xs else None
+
+
+def fmt(x):
+    return "-" if x is None else f"{x:.3f}"
+
+
+def pearson(a, b):
+    if len(a) < 3:
+        return None
+    ma, mb = sum(a) / len(a), sum(b) / len(b)
+    num = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    den = math.sqrt(sum((x - ma) ** 2 for x in a) * sum((y - mb) ** 2 for y in b))
+    return num / den if den else None
+
+
+def evaluate(c, ks):
+    r = S.search_always(c["query"], limit=LIMIT, score_threshold=c.get("threshold"))
+    hits = r["hits"]
+    ids = [slug(h["payload"].get("name", "")) for h in hits]
+    scores = [h["score"] for h in hits]
+    exp = c.get("expected", [])
+    exp_ids = [slug(nm(x)) for x in exp]
+    rel = set(exp_ids)
+    cos = {slug(x["name"]): x["cosine"] for x in exp if isinstance(x, dict) and x.get("cosine") is not None}
+    for x in c.get("top_exact", []):
+        cos.setdefault(slug(x["name"]), x["cosine"])
+
+    out = {"query": c["query"], "type": c["type"], "lang": c.get("lang", "en"), "mode": r["mode"], "ids": ids,
+           "fallback": bool(r.get("fallback") or r.get("margin") or r.get("dropped")), "pairs": []}
+
+    if rel:
+        for k in ks:
+            top = ids[:k]
+            tp = sum(1 for i in top if i in rel)
+            p = tp / len(top) if top else 0.0
+            den = min(len(rel), k) if CAP_RECALL else len(rel)
+            rc = tp / den
+            out[f"P@{k}"], out[f"R@{k}"] = p, rc
+            out[f"F1@{k}"] = 2 * p * rc / (p + rc) if p + rc else 0.0
+            out[f"Hit@{k}"] = 1.0 if tp else 0.0
+            ideal = dcg([1] * min(len(rel), k))
+            out[f"nDCG@{k}"] = dcg([1 if i in rel else 0 for i in top]) / ideal
+            if cos:
+                ic = dcg(sorted(cos.values(), reverse=True)[:k])
+                out[f"cosnDCG@{k}"] = dcg([cos.get(i, 0.0) for i in top]) / ic if ic else 0.0
+        out["MRR"] = next((1 / (n + 1) for n, i in enumerate(ids) if i in rel), 0.0)
+        h, ap = 0, 0.0
+        for n, i in enumerate(ids):
+            if i in rel:
+                h += 1
+                ap += h / (n + 1)
+        out["MAP"] = ap / min(len(rel), LIMIT)
+        # set-level metrics over EVERYTHING the engine returned (no k)
+        tp_all = sum(1 for i in ids if i in rel)
+        out["P"] = tp_all / len(ids) if ids else 0.0
+        out["R"] = min(1.0, tp_all / min(len(rel), LIMIT))      # the engine returns at most LIMIT items
+        out["F1"] = 2 * out["P"] * out["R"] / (out["P"] + out["R"]) if out["P"] + out["R"] else 0.0
+        out["missing"] = [nm(x) for x in exp if slug(nm(x)) not in ids]
+        out["extra"] = [h_["payload"].get("name") for h_, i in zip(hits, ids) if i not in rel]
+        out["pairs"] = [(s, cos[i]) for i, s in zip(ids, scores) if s is not None and i in cos]
+        out["residuals"] = [{"name": h_["payload"].get("name"), "estimated": cos[i], "returned": round(s, 4),
+                             "residual": round(s - cos[i], 4)}
+                            for h_, i, s in zip(hits, ids, scores) if s is not None and i in cos]
+        if out["pairs"]:
+            out["score_mae"] = mean([abs(s - c_) for s, c_ in out["pairs"]])
+            out["score_bias"] = mean([s - c_ for s, c_ in out["pairs"]])
+
+    ck, chk = c.get("checks", {}), {}
+    if c.get("mode"):
+        chk["mode"] = r["mode"] == c["mode"]
+    if ck.get("order_by") and len(hits) > 1 and not ck.get("expect_fallback"):
+        vals = [h_["payload"].get(ck["order_by"]) for h_ in hits]
+        asc = ck.get("order_dir", "asc") == "asc"
+        chk["order"] = all((a <= b) if asc else (a >= b) for a, b in zip(vals, vals[1:]))
+    if "expect_fallback" in ck:
+        chk["fallback"] = out["fallback"] == bool(ck["expect_fallback"])
+    if ck.get("must_not"):
+        bad = {slug(x) for x in ck["must_not"]} & set(ids)
+        chk["must_not"] = not bad
+        out["violations"] = sorted(bad)
+    if ck.get("top1"):
+        chk["top1"] = bool(ids) and ids[0] == slug(ck["top1"])
+    if ck.get("expect_empty"):
+        chk["empty"] = not ids
+    out["checks"] = chk
+    return out
+
+def simple_report(results):
+    rows = []
+    for r in results:
+        failed = [k for k, v in r["checks"].items() if not v]
+        p, rc = r.get("P"), r.get("R")
+        if failed or r.get("MRR") == 0:
+            status = "FAIL"
+        else:
+            status = "OK"
+        row = {"status": status, "query": r["query"], "type": r["type"], "lang": r["lang"],
+               "returned": r["ids"][:5]}
+        if p is not None:
+            row.update(precision=round(p, 2), recall=round(rc, 2), mrr=round(r["MRR"], 2))
+        if failed:
+            row["failed_checks"] = failed
+        if status != "OK" and r.get("missing"):
+            row["missing"] = r["missing"][:5]      # first 5 only
+        if status != "OK" and r.get("extra"):
+            row["unexpected"] = r["extra"][:5]
+        rows.append(row)
+    order = {"FAIL": 0, "OK": 1}
+    rows.sort(key=lambda x: order[x["status"]])    # problems first
+    counts = {s: sum(1 for x in rows if x["status"] == s) for s in order}
+    return {"summary": counts, "cases": rows}
 
 def main():
-    cases = json.loads(QUERIES_FILE.read_text(encoding="utf-8"))
-    results = [run_case(c) for c in cases]
+    ap = argparse.ArgumentParser()
+    here, root = Path(__file__).resolve().parent, Path(__file__).resolve().parents[1]
+    candidates = [here / "eval_queries.json", here / "eval_cases.json", root / "data" / "eval_queries.json",
+                  root / "data" / "eval_cases.json", root / "data" / "eval_set.json"]
+    default = next((p for p in candidates if p.exists()), candidates[2])
+    ap.add_argument("--data", default=str(default))
+    ap.add_argument("--k", type=int, nargs="+", default=[1, 3, 5, 10])
+    ap.add_argument("--llm", action="store_true", help="use the real parse_query (LLM). Default: the 'parsed' object in each case")
+    ap.add_argument("--verbose", action="store_true", help="full report (default: short summary)")
+    ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "eval_report"))
+    a = ap.parse_args()
+    ks = sorted(a.k)
+    a.stub = not a.llm
 
-    failures = [r for r in results if r["problems"]]
-    for r in failures:
-        print(f"\nFAIL {r['query']!r}  (type={r['type']}, mode={r['mode']})")
-        for p in r["problems"]:
-            print(f"   - {p}")
-        print(f"   top: {r['top']}")
+    if not Path(a.data).exists():
+        sys.exit(f"Dataset not found: {a.data}\nPut eval_queries.json in training/data/ or pass --data <path>")
+    cases = json.loads(Path(a.data).read_text(encoding="utf-8"))
+    print(f"dataset: {a.data}")
+    if a.stub:
+        lookup = {c["query"]: apply_default_order(PQ(**c.get("parsed", {}))) for c in cases}
+        S.parse_query = lambda text: lookup[text]
+    print(f"{len(cases)} cases | {'stub parse' if a.stub else 'real parse_query'} | "
+          f"MARGINS={getattr(S, 'MARGINS', '?')}")
 
-    print("\n" + "=" * 70)
-    by_type = defaultdict(list)
+    results = [evaluate(c, ks) for c in cases]
+
+    if not a.verbose:
+        k5 = 5 if 5 in ks else ks[-1]
+        keys = ["P", "R", "F1", "Hit@1", "MRR", "MAP", f"nDCG@{k5}"]
+        print("\nSUMMARY  (P / R / F1 = over everything returned)")
+        groups = defaultdict(list)
+        for r in results:
+            if "MRR" in r:
+                groups[r["type"]].append(r)
+                groups["ALL"].append(r)
+        for g in sorted(groups, key=lambda x: (x == "ALL", x)):
+            print(f"  {g:9} n={len(groups[g]):<3}" + "  ".join(f"{c}={fmt(mean([r.get(c) for r in groups[g]]))}" for c in keys))
+        agg = defaultdict(lambda: [0, 0])
+        for r in results:
+            for kk_, v in r["checks"].items():
+                agg[kk_][1] += 1
+                agg[kk_][0] += int(v)
+        res_groups = defaultdict(list)
+        for r in results:
+            res_groups[r["type"]].extend(r["pairs"])
+            res_groups["ALL"].extend(r["pairs"])
+        if res_groups["ALL"]:
+            print("\nRESIDUAL  (returned score - estimated cosine)")
+            for g in sorted(res_groups, key=lambda x: (x == "ALL", x)):
+                pr = res_groups[g]
+                if pr:
+                    print(f"  {g:9} n={len(pr):<4}mean={mean([x - y for x, y in pr]):+.3f}")
+        failed = {k_: v for k_, v in agg.items() if v[0] < v[1]}
+        if failed:                      # show the behaviour checks only when something breaks
+            print("\nCHECKS FAILED")
+            for kk_, (pp, tt) in sorted(failed.items()):
+                print(f"  {kk_:10} {pp}/{tt}")
+            for r in results:
+                bad = [k_ for k_, v in r["checks"].items() if not v]
+                if bad:
+                    print(f"  - {r['query']!r} {bad}")
+        Path(a.out + ".json").write_text(
+            json.dumps(simple_report(results), ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"\nsaved {a.out}.json")
+        return
+
+    cols = (["P", "R", "F1"] + [f"P@{k}" for k in ks] + [f"R@{k}" for k in ks] + [f"F1@{k}" for k in ks] + [f"Hit@{k}" for k in ks]
+            + ["MRR", "MAP"] + [f"nDCG@{k}" for k in ks] + [f"cosnDCG@{k}" for k in ks])
+    for key in ("type", "lang"):
+        groups = defaultdict(list)
+        for r in results:
+            groups[r[key]].append(r)
+            groups["ALL"].append(r)
+        print(f"\n{'=' * 110}\nMETRICS BY {key.upper()}\n{'=' * 110}")
+        for g in sorted(groups, key=lambda x: (x == "ALL", x)):
+            rs = [r for r in groups[g] if "MRR" in r]
+            vals = {c: mean([r.get(c) for r in rs]) for c in cols}
+            print(f"[{g}] n={len(rs)}  " + "  ".join(f"{c}={fmt(v)}" for c, v in vals.items() if v is not None))
+
+    pairs = [p for r in results for p in r["pairs"]]
+    if pairs:
+        corr = pearson([p[0] for p in pairs], [p[1] for p in pairs])
+        print(f"\nreturned score vs dataset cosine: n={len(pairs)}  MAE={fmt(mean([abs(s - c_) for s, c_ in pairs]))}  "
+              f"bias={fmt(mean([s - c_ for s, c_ in pairs]))}  pearson={fmt(corr)}")
+
+    print(f"\n{'=' * 110}\nCHECKS (pass/total)\n{'=' * 110}")
+    agg = defaultdict(lambda: [0, 0])
     for r in results:
-        by_type[r["type"]].append(r)
-    for t, rs in sorted(by_type.items()):
-        print_row(t, summarize(rs))
-    print("-" * 70)
-    print_row("ALL", summarize(results))
+        for k, v in r["checks"].items():
+            agg[k][1] += 1
+            agg[k][0] += int(v)
+    for k, (p, t) in sorted(agg.items()):
+        print(f"  {k:10} {p}/{t}")
+    for r in results:
+        bad = [k for k, v in r["checks"].items() if not v]
+        if bad:
+            extra = f" violations={r['violations']}" if r.get("violations") else ""
+            print(f"  FAIL {r['query']!r} [{r['type']}] {bad} mode={r['mode']} returned={r['ids'][:5]}{extra}")
+
+    kk = ks[min(2, len(ks) - 1)]
+    print(f"\n{'=' * 110}\nWORST 10 RANKED CASES (lowest nDCG@{kk})\n{'=' * 110}")
+    for r in sorted([r for r in results if "MRR" in r], key=lambda r: (r[f"nDCG@{kk}"], r["MRR"]))[:10]:
+        print(f"  {r['query']!r} [{r['type']}] MRR={r['MRR']:.2f} nDCG@{kk}={r[f'nDCG@{kk}']:.2f}")
+        print(f"      missing: {r['missing'][:6]}   unexpected: {r['extra'][:6]}")
+
+    Path(a.out + ".json").write_text(
+        json.dumps(simple_report(results), ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"\nsaved {a.out}.json")
 
 
 if __name__ == "__main__":
