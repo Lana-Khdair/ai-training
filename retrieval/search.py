@@ -62,7 +62,7 @@ def _hit(p, score=None):
     return {"id": str(p.id), "score": score, "payload": p.payload}
 
 
-# drops weak semantic hits that are far below the best one (e.g. "sushi" -> dumplings)
+# drops weak semantic hits that are far below the best one
 def _trim(hits):
     if REL_CUTOFF is None or not hits:
         return hits
