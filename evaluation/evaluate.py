@@ -1,24 +1,4 @@
-"""Evaluate the search on eval_cases.json (expected items + estimated/real cosine + checks).
 
-Case format:
-  {"query": "...", "type": "semantic|filters|hybrid|fallback|none", "mode": "...",
-   "expected": [{"name": "Hot Wings", "cosine": 0.62}, ...]  or ["Cheese Pizza", ...],
-   "checks": {"order_by": "price", "order_dir": "asc", "expect_fallback": true,
-              "must_not": [...], "top1": "...", "expect_empty": true},
-   "parsed": {...}}                      # only used with --stub
-
-Metrics (cases that have `expected`):
-  Precision@k, Recall@k, F1@k, HitRate@k, MRR, MAP, nDCG@k (binary),
-  cosnDCG@k  (gain = cosine of the expected item -> rewards putting the MOST similar items first),
-  score_mae / score_bias / score_corr  (engine's returned score vs the cosine in the dataset)
-Checks (pass/total): mode, order, fallback, must_not, top1, empty.
-
-Project layout: training/evaluation/evaluate.py  +  training/data/eval_queries.json
-Just press Run in PyCharm, or add parameters:
-    --llm                          use the real parse_query (default: each case's "parsed" object, no LLM)
-    --data data/eval_queries.json  another dataset file
-    --k 1 3 5 10                   cut-offs
-"""
 import argparse
 import json
 import math
@@ -189,8 +169,7 @@ def main():
     if a.stub:
         lookup = {c["query"]: apply_default_order(PQ(**c.get("parsed", {}))) for c in cases}
         S.parse_query = lambda text: lookup[text]
-    print(f"{len(cases)} cases | {'stub parse' if a.stub else 'real parse_query'} | "
-          f"MARGINS={getattr(S, 'MARGINS', '?')}")
+    print(f"{len(cases)} cases")
 
     results = [evaluate(c, ks) for c in cases]
 
