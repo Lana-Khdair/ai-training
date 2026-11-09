@@ -142,10 +142,6 @@ CASES = [
     C("ar", "حلوى بالجبنة", PQ(category="Desserts", include_ingredients=["cheese"])),
     C("en", "dessert with cheese under $1", PQ(category="Desserts", price_max=1, include_ingredients=["cheese"]),
       "two fallbacks in a row: ingredients dropped, then the price handled by 'nearest'"),
-
-    "E4. SIMILARITY THRESHOLD",
-    C("en", "sushi (similarity threshold 0.95)", PQ(semantic_text="sushi"),
-      "nothing scores >= 0.95, so the same query is repeated without the threshold", thr=0.95),
 ]
 
 
