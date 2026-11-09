@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .env.py
 data/
+evaluation/eval_report.json
